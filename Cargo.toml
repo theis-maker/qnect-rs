@@ -1,0 +1,15 @@
+[package]
+name = "qnect"
+version = "0.1.0"
+authors = ["Theis Maker <mail@theismaker.com>"]
+edition = "2024"
+description = "Quantum-native circuit simulator in Rust"
+license = "MIT"
+readme = "README.md"
+keywords = ["quantum", "rust", "simulation"]
+categories = ["science", "mathematics"]
+repository = "https://github.com/theis-maker/qnect-rs"
+homepage = "https://github.com/theis-maker/qnect-rs"
+documentation = "https://docs.rs/qnect"
+
+[dependencies]
