@@ -1,15 +1,23 @@
 [package]
 name = "qnect"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Theis Maker <mail@theismaker.com>"]
 edition = "2024"
-description = "Quantum-native circuit simulator in Rust"
+description = "Quantum computing using Rust: build, simulate, and verify quantum circuits."
 license = "MIT"
 readme = "README.md"
-keywords = ["quantum", "rust", "simulation"]
+keywords = ["quantum", "quantum-computing", "simulation", "quantum-circuits", "quantum-network"]
 categories = ["science", "mathematics"]
 repository = "https://github.com/theis-maker/qnect-rs"
 homepage = "https://github.com/theis-maker/qnect-rs"
 documentation = "https://docs.rs/qnect"
 
 [dependencies]
+async-trait = "0.1"
+num-complex = "0.4.6"
+rand = "0.9.2"
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+tokio-test = "*"
+futures = "0.3"
