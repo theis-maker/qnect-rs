@@ -1,10 +1,10 @@
 [package]
 name = "qnect"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Theis Maker <mail@theismaker.com>"]
 edition = "2024"
 description = "Quantum computing using Rust: build, simulate, and verify quantum circuits."
-license = "MIT"
+license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["quantum", "quantum-computing", "simulation", "quantum-circuits", "quantum-network"]
 categories = ["science", "mathematics"]

@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```toml
 [dependencies]
-qnect = "0.1"
+qnect = "0.1.2"
 tokio = { version = "1", features = ["full"] }
 rand = "0.8"  # For quantum algorithms
 
@@ -361,5 +361,3 @@ MIT OR Apache-2.0 (your choice)
 ---
 
 *Remember: In quantum computing, the hardest part shouldn't be the framework.*
-
-**Qnect** - Where quantum meets Rust. 🦀⚛️

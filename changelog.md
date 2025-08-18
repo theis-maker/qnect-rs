@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.1] - 2025.08.18
+## [0.1.2] - 2025.08.18
 
 ### Added
 - Comprehensive quantum verification example (`00_quantum_verification`)
