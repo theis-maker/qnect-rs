@@ -42,9 +42,9 @@ mod example_tests {
     #[test]
     fn test_all_examples() {
         let examples = vec![
-            ("00_quantum_verification", 30), // This one runs many tests, needs more time
+            ("00_quantum_verification", 30),
             ("01_quantum_interference", 5),
-            ("02_ghz_scaling", 30), // This one might take longer
+            ("02_ghz_scaling", 30),
             ("03_simple_bell_pair", 5),
             ("04_quantum_teleportation", 5),
             ("05_backend_comparison", 5),
@@ -55,6 +55,16 @@ mod example_tests {
             ("10_qkd_with_eve", 5),
             ("11_gate_showcase", 5),
             ("12_future_network", 5),
+            ("13_circuit_noise", 5),
+            ("14_dagger_gates", 5),
+            ("15_qasm_export", 5),
+            ("16_qasm_import", 5),
+            ("17_grovers_search", 10),
+            ("18_stabilizer_demo", 30),
+            ("19_quantum_network_protocols", 10),
+            ("20_quantum_internet_stack", 10),
+            ("21_qnpu_test", 5),
+            ("22_quantum_anonymous_transmission", 10),
         ];
 
         let mut failed = Vec::new();

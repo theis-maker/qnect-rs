@@ -7,6 +7,7 @@ pub mod entanglement;
 pub mod error;
 pub mod network;
 pub mod protocol;
+pub mod qasm_parser;
 pub mod state;
 pub mod system;
 pub mod types;

@@ -54,7 +54,9 @@ impl QuantumBackend for StateVectorBackend {
                         ((a0 + a1) / sqrt2, (a0 - a1) / sqrt2)
                     }
                     Gate1::S => (a0, Complex64::i() * a1),
+                    Gate1::SDag => (a0, -Complex64::i() * a1),
                     Gate1::T => (a0, Complex64::from_polar(1.0, PI / 4.0) * a1),
+                    Gate1::TDag => (a0, Complex64::from_polar(1.0, -PI / 4.0) * a1),
                     Gate1::Rx(theta) => {
                         let cos = Complex64::new((theta / 2.0).cos(), 0.0);
                         let sin = Complex64::new(0.0, -(theta / 2.0).sin());

@@ -52,7 +52,9 @@ pub enum Gate1 {
     Y,
     Z,
     S,
+    SDag, // S† = S* (conjugate of S)
     T,
+    TDag, // T† = T* (conjugate of T)
     Rx(f64),
     Ry(f64),
     Rz(f64),

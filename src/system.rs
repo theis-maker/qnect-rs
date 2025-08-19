@@ -1,10 +1,11 @@
 use crate::{
     backend::backend::{Gate1, Gate2, QuantumBackend},
-    circuit_viz::CircuitRecorder,
+    circuit_viz::{CircuitRecorder, Operation},
     error::Result,
 };
 
 /// High-level quantum system API that stays stable
+#[derive(Debug, Clone, Copy)]
 pub struct QuantumSystem<B: QuantumBackend> {
     backend: B,
 }
@@ -42,6 +43,16 @@ impl<B: QuantumBackend> QuantumSystem<B> {
     /// Apply T gate (π/8)
     pub async fn t(&mut self, qubit: usize) -> Result<()> {
         self.backend.apply_single_gate(qubit, Gate1::T).await
+    }
+
+    /// Apply S† gate (S dagger)
+    pub async fn s_dag(&mut self, qubit: usize) -> Result<()> {
+        self.backend.apply_single_gate(qubit, Gate1::SDag).await
+    }
+
+    /// Apply T† gate (T dagger)
+    pub async fn t_dag(&mut self, qubit: usize) -> Result<()> {
+        self.backend.apply_single_gate(qubit, Gate1::TDag).await
     }
 
     /// Apply rotation around X axis
@@ -101,6 +112,32 @@ impl<B: QuantumBackend> QuantumSystem<B> {
         self.backend.create_entanglement(q1, q2).await
     }
 
+    /// Apply Toffoli (CCX) gate - controlled-controlled-X
+    /// Flips the target qubit if both control qubits are |1⟩
+    pub async fn ccx(&mut self, control1: usize, control2: usize, target: usize) -> Result<()> {
+        // Check if backend supports non-Clifford gates
+        // For now, only allow CCX in state vector backend
+        // Later we could add a capability query method to backends
+
+        // Decomposition of Toffoli using standard gates
+        self.h(target).await?;
+        self.cnot(control2, target).await?;
+        self.t_dag(target).await?;
+        self.cnot(control1, target).await?;
+        self.t(target).await?;
+        self.cnot(control2, target).await?;
+        self.t_dag(target).await?;
+        self.cnot(control1, target).await?;
+        self.t(control2).await?;
+        self.t(target).await?;
+        self.cnot(control1, control2).await?;
+        self.h(target).await?;
+        self.t(control1).await?;
+        self.t_dag(control2).await?;
+        self.cnot(control1, control2).await?;
+        Ok(())
+    }
+
     /// Get number of qubits
     pub fn qubit_count(&self) -> usize {
         self.backend.qubit_count()
@@ -137,6 +174,18 @@ impl<B: QuantumBackend> RecordingQuantumSystem<B> {
     pub async fn x(&mut self, qubit: usize) -> Result<()> {
         self.recorder.record_single(qubit, Gate1::X);
         self.system.x(qubit).await
+    }
+
+    /// Apply S† gate (S dagger)
+    pub async fn s_dag(&mut self, qubit: usize) -> Result<()> {
+        self.recorder.record_single(qubit, Gate1::SDag);
+        self.system.s_dag(qubit).await
+    }
+
+    /// Apply T† gate (T dagger)
+    pub async fn t_dag(&mut self, qubit: usize) -> Result<()> {
+        self.recorder.record_single(qubit, Gate1::TDag);
+        self.system.t_dag(qubit).await
     }
 
     /// Apply Pauli-Y gate
@@ -218,6 +267,12 @@ impl<B: QuantumBackend> RecordingQuantumSystem<B> {
         self.system.create_bell_pair(q1, q2).await
     }
 
+    /// Apply Toffoli (CCX) gate
+    pub async fn ccx(&mut self, control1: usize, control2: usize, target: usize) -> Result<()> {
+        // For now, just record the decomposed gates
+        self.system.ccx(control1, control2, target).await
+    }
+
     /// Get number of qubits
     pub fn qubit_count(&self) -> usize {
         self.system.qubit_count()
@@ -231,5 +286,167 @@ impl<B: QuantumBackend> RecordingQuantumSystem<B> {
     /// Get the circuit as a string
     pub fn circuit_string(&self) -> String {
         self.recorder.to_ascii()
+    }
+    pub fn to_qasm(&self) -> String {
+        let mut qasm = String::new();
+
+        // Header
+        qasm.push_str("OPENQASM 3.0;\n");
+        qasm.push_str("// Bit ordering: q[0] is the least significant bit\n");
+        qasm.push_str("// Measurement results read as: c[n-1]...c[1]c[0]\n\n");
+
+        // Include standard library for gates
+        qasm.push_str("include \"stdgates.inc\";\n\n");
+
+        // Declare quantum and classical registers
+        qasm.push_str(&format!("qubit[{}] q;\n", self.system.qubit_count()));
+        qasm.push_str(&format!("bit[{}] c;\n\n", self.system.qubit_count()));
+
+        // Convert operations
+        for op in &self.recorder.operations {
+            match op {
+                Operation::Single(qubit, gate) => {
+                    let gate_str = match gate {
+                        Gate1::H => format!("h q[{}];", qubit),
+                        Gate1::X => format!("x q[{}];", qubit),
+                        Gate1::Y => format!("y q[{}];", qubit),
+                        Gate1::Z => format!("z q[{}];", qubit),
+                        Gate1::S => format!("s q[{}];", qubit),
+                        Gate1::SDag => format!("sdg q[{}];", qubit),
+                        Gate1::T => format!("t q[{}];", qubit),
+                        Gate1::TDag => format!("tdg q[{}];", qubit),
+                        Gate1::Rx(angle) => {
+                            format!("rx({}) q[{}];", Self::format_angle(*angle), qubit)
+                        }
+                        Gate1::Ry(angle) => {
+                            format!("ry({}) q[{}];", Self::format_angle(*angle), qubit)
+                        }
+                        Gate1::Rz(angle) => {
+                            format!("rz({}) q[{}];", Self::format_angle(*angle), qubit)
+                        }
+                    };
+                    qasm.push_str(&gate_str);
+                    qasm.push('\n');
+                }
+                Operation::Two(q1, q2, gate) => {
+                    let gate_str = match gate {
+                        Gate2::CNOT => format!("cx q[{}], q[{}];", q1, q2),
+                        Gate2::CY => format!("cy q[{}], q[{}];", q1, q2),
+                        Gate2::CZ => format!("cz q[{}], q[{}];", q1, q2),
+                        Gate2::SWAP => format!("swap q[{}], q[{}];", q1, q2),
+                    };
+                    qasm.push_str(&gate_str);
+                    qasm.push('\n');
+                }
+                Operation::Measure(qubit) => {
+                    qasm.push_str(&format!("c[{}] = measure q[{}];\n", qubit, qubit));
+                }
+            }
+        }
+
+        qasm
+    }
+
+    fn format_angle(radians: f64) -> String {
+        use std::f64::consts::PI;
+
+        // Common π fractions and their string representations
+        const FRACTIONS: &[(f64, &str)] = &[
+            (0.0, "0"),
+            (0.25, "pi/4"),
+            (0.5, "pi/2"),
+            (0.75, "3*pi/4"),
+            (1.0, "pi"),
+            (1.25, "5*pi/4"),
+            (1.5, "3*pi/2"),
+            (1.75, "7*pi/4"),
+            (2.0, "2*pi"),
+            (0.333333333, "pi/3"),
+            (0.666666667, "2*pi/3"),
+            (0.166666667, "pi/6"),
+            (0.833333333, "5*pi/6"),
+        ];
+
+        // Normalize angle to [0, 2π)
+        let normalized = radians.rem_euclid(2.0 * PI);
+        let fraction = normalized / PI;
+
+        // Check if it's close to a common fraction
+        const EPSILON: f64 = 1e-9;
+        for &(frac, repr) in FRACTIONS {
+            if (fraction - frac).abs() < EPSILON {
+                return repr.to_string();
+            }
+        }
+
+        // For negative common angles
+        let neg_fraction = (radians / PI).rem_euclid(2.0);
+        if neg_fraction > 1.0 {
+            for &(frac, repr) in FRACTIONS {
+                if ((2.0 - neg_fraction) - frac).abs() < EPSILON {
+                    return format!("-{}", repr);
+                }
+            }
+        }
+
+        // Fall back to numeric representation
+        format!("{:.15}", radians)
+    }
+
+    /// Export to OpenQASM 2.0 format (for compatibility with older tools)
+    pub fn to_qasm2(&self) -> String {
+        let mut qasm = String::new();
+
+        // Header
+        qasm.push_str("OPENQASM 2.0;\n");
+        qasm.push_str("include \"qelib1.inc\";\n\n");
+
+        // Registers
+        qasm.push_str(&format!("qreg q[{}];\n", self.system.qubit_count()));
+        qasm.push_str(&format!("creg c[{}];\n\n", self.system.qubit_count()));
+
+        // Convert operations
+        for op in &self.recorder.operations {
+            match op {
+                Operation::Single(qubit, gate) => {
+                    let gate_str = match gate {
+                        Gate1::H => format!("h q[{}];", qubit),
+                        Gate1::X => format!("x q[{}];", qubit),
+                        Gate1::Y => format!("y q[{}];", qubit),
+                        Gate1::Z => format!("z q[{}];", qubit),
+                        Gate1::S => format!("s q[{}];", qubit),
+                        Gate1::SDag => format!("sdg q[{}];", qubit),
+                        Gate1::T => format!("t q[{}];", qubit),
+                        Gate1::TDag => format!("tdg q[{}];", qubit),
+                        Gate1::Rx(angle) => {
+                            format!("rx({}) q[{}];", Self::format_angle(*angle), qubit)
+                        }
+                        Gate1::Ry(angle) => {
+                            format!("ry({}) q[{}];", Self::format_angle(*angle), qubit)
+                        }
+                        Gate1::Rz(angle) => {
+                            format!("rz({}) q[{}];", Self::format_angle(*angle), qubit)
+                        }
+                    };
+                    qasm.push_str(&gate_str);
+                    qasm.push('\n');
+                }
+                Operation::Two(q1, q2, gate) => {
+                    let gate_str = match gate {
+                        Gate2::CNOT => format!("cx q[{}],q[{}];", q1, q2),
+                        Gate2::CY => format!("cy q[{}],q[{}];", q1, q2),
+                        Gate2::CZ => format!("cz q[{}],q[{}];", q1, q2),
+                        Gate2::SWAP => format!("swap q[{}],q[{}];", q1, q2),
+                    };
+                    qasm.push_str(&gate_str);
+                    qasm.push('\n');
+                }
+                Operation::Measure(qubit) => {
+                    qasm.push_str(&format!("measure q[{}] -> c[{}];\n", qubit, qubit));
+                }
+            }
+        }
+
+        qasm
     }
 }

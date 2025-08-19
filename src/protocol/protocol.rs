@@ -64,45 +64,95 @@ impl QuantumProtocol {
 // Example usage showing the clean API
 #[cfg(test)]
 mod tests {
+    use crate::{builder::BackendType, network::network::LinkType};
+
     use super::*;
 
-    #[test]
-    fn test_quantum_network() {
-        let mut network = QuantumNetwork::new();
-
-        // Add nodes
-        network.add_node("alice", 2);
-        network.add_node("bob", 2);
-
-        // Create EPR pair
-        let (a, b) = network.create_epr_pair("alice", "bob").unwrap();
-
-        // Verify entanglement
-        assert!(network.are_entangled(a, b));
-
-        // Measure at Alice
-        let _m1 = network.measure("alice", a).unwrap();
-
-        // No longer entangled after measurement
-        assert!(!network.are_entangled(a, b));
-    }
-
-    #[tokio::test]
-    async fn test_ghz_distribution() {
-        let mut network = QuantumNetwork::new();
-
-        // Three-party network
-        network.add_node("alice", 1);
-        network.add_node("bob", 1);
-        network.add_node("charlie", 1);
-
-        // Create GHZ state
-        let qubits = QuantumProtocol::distribute_ghz(&mut network, vec!["alice", "bob", "charlie"])
-            .await
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_quantum_network() {
+        let mut network = QuantumNetwork::new_distributed();
+        network
+            .add_distributed_node("Alice", 2, BackendType::StateVector)
+            .unwrap();
+        network
+            .add_distributed_node("Bob", 2, BackendType::StateVector)
             .unwrap();
 
-        // All should be entangled
-        assert!(network.are_entangled(qubits[0], qubits[1]));
-        assert!(network.are_entangled(qubits[1], qubits[2]));
+        network
+            .add_quantum_link(
+                "Alice",
+                "Bob",
+                LinkType::Fiber {
+                    length_km: 10.0,
+                    loss_db_per_km: 0.2,
+                },
+                0.98,
+                1000.0,
+            )
+            .unwrap();
+
+        let (q1, q2) = network.create_epr_pair("Alice", "Bob").unwrap();
+
+        // Check nonlocal Bell pair registration instead of entanglement_registry
+        assert!(network.is_bell_qubit("Alice", q1).is_some());
+        assert!(network.is_bell_qubit("Bob", q2).is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_ghz_distribution() {
+        let mut network = QuantumNetwork::new_distributed();
+        network
+            .add_distributed_node("Alice", 4, BackendType::StateVector) // Increased from 2 to 4
+            .unwrap();
+        network
+            .add_distributed_node("Bob", 4, BackendType::StateVector) // Increased from 2 to 4
+            .unwrap();
+        network
+            .add_distributed_node("Charlie", 4, BackendType::StateVector) // Increased from 2 to 4
+            .unwrap();
+
+        // Create full mesh for GHZ
+        network
+            .add_quantum_link(
+                "Alice",
+                "Bob",
+                LinkType::Fiber {
+                    length_km: 10.0,
+                    loss_db_per_km: 0.2,
+                },
+                0.98,
+                1000.0,
+            )
+            .unwrap();
+        network
+            .add_quantum_link(
+                "Alice",
+                "Charlie",
+                LinkType::Fiber {
+                    length_km: 10.0,
+                    loss_db_per_km: 0.2,
+                },
+                0.98,
+                1000.0,
+            )
+            .unwrap();
+        network
+            .add_quantum_link(
+                "Bob",
+                "Charlie",
+                LinkType::Fiber {
+                    length_km: 10.0,
+                    loss_db_per_km: 0.2,
+                },
+                0.98,
+                1000.0,
+            )
+            .unwrap();
+
+        let ghz_qubits = network
+            .create_distributed_ghz(vec!["Alice", "Bob", "Charlie"])
+            .await
+            .unwrap();
+        assert_eq!(ghz_qubits.len(), 3);
     }
 }

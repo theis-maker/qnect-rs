@@ -68,6 +68,10 @@ impl QnectError {
         Self::QubitOutOfRange { qubit, max }
     }
 
+    pub fn invalid_operation(operation: String, reason: String) -> Self {
+        Self::InvalidOperation { operation, reason }
+    }
+
     pub fn invalid_gate(reason: impl Into<String>) -> Self {
         Self::InvalidGate {
             reason: reason.into(),

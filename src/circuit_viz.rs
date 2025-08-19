@@ -1,11 +1,11 @@
 use crate::backend::backend::{Gate1, Gate2};
 
 pub struct CircuitRecorder {
-    operations: Vec<Operation>,
+    pub operations: Vec<Operation>,
     n_qubits: usize,
 }
 
-enum Operation {
+pub enum Operation {
     Single(usize, Gate1),
     Two(usize, usize, Gate2),
     Measure(usize),
@@ -39,7 +39,7 @@ impl CircuitRecorder {
             circuit[i] = format!("q{}: ", i);
         }
 
-        // Add gates
+        // we add gates
         for op in &self.operations {
             let _width = 5; // Fixed width for alignment
 
@@ -59,7 +59,9 @@ impl CircuitRecorder {
                         Gate1::Y => "┤Y├",
                         Gate1::Z => "┤Z├",
                         Gate1::S => "┤S├",
+                        Gate1::SDag => "┤S†├",
                         Gate1::T => "┤T├",
+                        Gate1::TDag => "┤T†├",
                         Gate1::Rx(_) => "┤Rx├",
                         Gate1::Ry(_) => "┤Ry├",
                         Gate1::Rz(_) => "┤Rz├",
