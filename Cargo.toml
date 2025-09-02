@@ -1,6 +1,6 @@
 [package]
 name = "qnect"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Theis Maker <mail@theismaker.com>"]
 edition = "2024"
 description = "⚛ Quantum computing in Rust: from Bell pairs to distributed quantum networks."
