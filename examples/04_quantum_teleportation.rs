@@ -1,4 +1,4 @@
-use qnect::{backend::backend::QuantumBackend, create, system::QuantumSystem};
+use qnect::{backend::backend::QuantumBackend, create, quantum::system::QuantumSystem};
 
 async fn teleport_qubit(
     q: &mut QuantumSystem<Box<dyn QuantumBackend>>,

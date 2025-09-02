@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
-use qnect::network::network::{LinkType, NetworkOperation, QuantumNetwork};
-use qnect::state::Gate1Q;
+use qnect::{
+    network::network::{LinkType, NetworkOperation, QuantumNetwork},
+    quantum::state::Gate1Q,
+};
 
 /// Quantum Anonymous Transmission Protocol Example
 /// Based on: "Quantum Anonymous Transmissions" by Christandl & Wehner (2018)
@@ -61,8 +63,8 @@ async fn test_anonymous_classical(participants: &[&str]) -> Result<(), Box<dyn s
         .await?;
 
     println!("   Step 4: Parity of measurements = {}", result);
-    println!("   ✓ Everyone knows bit = {} was sent", result);
-    println!("   ✓ Nobody knows Alice was the sender!\n");
+    println!("   Everyone knows bit = {} was sent", result);
+    println!("   Nobody knows Alice was the sender!\n");
 
     // Verify: Try with bit 0
     let mut network2 = create_network(participants)?;

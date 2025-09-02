@@ -1,14 +1,17 @@
-use crate::backend::{
-    backend::QuantumBackend,
-    mock_qnpu::MockQnpuBackend,
-    network_backend::{NetworkBackend, NetworkTopology},
-    noisy::NoisyBackend,
-    stabilizer::StabilizerBackend,
-    state_vector::StateVectorBackend,
-};
 use crate::error::{QnectError, Result};
-use crate::qasm_parser::{QasmOperation, parse_qasm};
-use crate::system::QuantumSystem;
+use crate::quantum::system::QuantumSystem;
+use crate::utils::qasm_parser::QasmOperation;
+use crate::{
+    backend::{
+        backend::QuantumBackend,
+        mock_qnpu::MockQnpuBackend,
+        network_backend::{NetworkBackend, NetworkTopology},
+        noisy::NoisyBackend,
+        stabilizer::StabilizerBackend,
+        state_vector::StateVectorBackend,
+    },
+    utils::qasm_parser::parse_qasm,
+};
 
 /// Fluent API for building quantum systems
 pub struct QuantumSystemBuilder {

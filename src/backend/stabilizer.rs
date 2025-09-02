@@ -273,7 +273,7 @@ impl QuantumBackend for StabilizerBackend {
             }
 
             _ => Err(QnectError::invalid_operation(
-                "StabilizerBackend::apply_single_gate".into(),
+                "StabilizerBackend::apply_single_gate",
                 format!("Gate {:?} not supported in stabilizer backend", gate),
             )),
         }
@@ -285,8 +285,8 @@ impl QuantumBackend for StabilizerBackend {
         }
         if c == t {
             return Err(QnectError::invalid_operation(
-                "apply_two_gate".into(),
-                "Cannot apply 2-qubit gate to same qubit".into(),
+                "apply_two_gate",
+                "Cannot apply 2-qubit gate to same qubit",
             ));
         }
         self.measurement_results[c] = None;
@@ -327,7 +327,7 @@ impl QuantumBackend for StabilizerBackend {
             }
 
             _ => Err(QnectError::invalid_operation(
-                "StabilizerBackend::apply_two_gate".into(),
+                "StabilizerBackend::apply_two_gate",
                 format!("Gate {:?} not supported in stabilizer backend", gate),
             )),
         }

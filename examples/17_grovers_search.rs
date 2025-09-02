@@ -1,6 +1,6 @@
 use qnect::backend::backend::QuantumBackend;
 use qnect::create;
-use qnect::system::QuantumSystem;
+use qnect::quantum::system::QuantumSystem;
 use std::f64::consts::PI;
 
 #[tokio::main]

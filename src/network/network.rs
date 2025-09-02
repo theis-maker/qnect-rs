@@ -1,8 +1,9 @@
-use crate::entanglement::EntanglementTracker;
-use crate::error::QnectError;
+use crate::network::node_types::{NodeType, RoutingStrategy};
 use crate::network::nonlocal::{BellId, GhzId, NonlocalStore, PauliBits, SharedBell, SharedGhz};
-use crate::state::{Gate1Q, Gate2Q, QuantumState};
-use crate::system::QuantumSystem;
+
+use crate::quantum::entanglement::EntanglementTracker;
+use crate::quantum::state::*;
+use crate::quantum::system::QuantumSystem;
 use crate::{
     backend::backend::QuantumBackend,
     builder::{BackendType, QuantumSystemBuilder},
@@ -12,7 +13,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::f64::consts::PI;
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, Receiver, Sender};
+
+use crate::error::{QnectError, Result};
 
 #[derive(Debug, Clone)]
 pub struct PauliFrame {
@@ -204,26 +208,32 @@ impl QuantumNode {
     }
 
     /// Send classical data to another node
-    pub async fn send_classical(&self, to: &str, data: Vec<u8>) -> Result<(), NetworkError> {
+    pub async fn send_classical(&self, to: &str, data: Vec<u8>) -> Result<()> {
         let sender = self
             .classical_outbox
             .get(to)
-            .ok_or(NetworkError::NoConnection)?;
+            .ok_or(QnectError::NoConnection {
+                from: "sender".to_string(),
+                to: to.to_string(),
+            })?;
 
         sender
             .send((self.id.clone(), data))
             .await
-            .map_err(|_| NetworkError::SendFailed)?;
+            .map_err(|_| QnectError::SendFailed)?;
 
         Ok(())
     }
 
     /// Receive classical data from a specific node
-    pub async fn recv_classical(&mut self, from: &str) -> Result<Vec<u8>, NetworkError> {
+    pub async fn recv_classical(&mut self, from: &str) -> Result<Vec<u8>> {
         let inbox = self
             .classical_inbox
             .as_mut()
-            .ok_or(NetworkError::NoConnection)?;
+            .ok_or(QnectError::NoConnection {
+                from: from.to_string(),
+                to: "receiver".to_string(),
+            })?;
 
         while let Some((sender, data)) = inbox.recv().await {
             if sender == from {
@@ -231,18 +241,18 @@ impl QuantumNode {
             }
             // Could buffer other messages here if needed
         }
-        Err(NetworkError::ConnectionClosed)
+        Err(QnectError::ConnectionClosed)
     }
 
     /// Send a single classical bit (common in quantum protocols)
-    pub async fn send_bit(&self, to: &str, bit: u8) -> Result<(), NetworkError> {
+    pub async fn send_bit(&self, to: &str, bit: u8) -> Result<()> {
         self.send_classical(to, vec![bit]).await
     }
 
     /// Receive a single classical bit
-    pub async fn recv_bit(&mut self, from: &str) -> Result<u8, NetworkError> {
+    pub async fn recv_bit(&mut self, from: &str) -> Result<u8> {
         let data = self.recv_classical(from).await?;
-        data.first().copied().ok_or(NetworkError::EmptyMessage)
+        data.first().copied().ok_or(QnectError::EmptyMessage)
     }
 
     /// Check if node supports a gate
@@ -263,7 +273,7 @@ pub struct QuantumLink {
     pub latency_us: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LinkType {
     Fiber { length_km: f64, loss_db_per_km: f64 },
     FreeSpace { distance_km: f64 },
@@ -340,6 +350,12 @@ pub enum NetworkMode {
     Legacy,
     /// Distributed mode - each node has its own quantum system (scales to 1000s of nodes)
     Distributed,
+}
+
+impl Default for QuantumNetwork {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl QuantumNetwork {
@@ -421,12 +437,12 @@ impl QuantumNetwork {
             .copied()
     }
 
-    pub fn allocate_local_qubit(&mut self, node_id: &str) -> Result<usize, NetworkError> {
+    pub fn allocate_local_qubit(&mut self, node_id: &str) -> Result<usize> {
         let node = self
             .nodes
             .get_mut(node_id)
-            .ok_or(NetworkError::NodeNotFound)?;
-        let qubit = node.allocate_qubit().ok_or(NetworkError::NoFreeQubits)?;
+            .ok_or(QnectError::node_not_found(node_id))?;
+        let qubit = node.allocate_qubit().ok_or(QnectError::NoFreeQubits)?;
 
         // Record the allocation
         self.protocol_history.push(NetworkOperation::AllocateLocal {
@@ -445,7 +461,7 @@ impl QuantumNetwork {
     }
 
     /// Calculate total fidelity along a path
-    pub fn calculate_path_fidelity(&self, path: &[String]) -> Result<f64, NetworkError> {
+    pub fn calculate_path_fidelity(&self, path: &[String]) -> Result<f64> {
         if path.len() < 2 {
             return Ok(1.0);
         }
@@ -455,9 +471,9 @@ impl QuantumNetwork {
             .map(|nodes| {
                 self.get_link(&nodes[0], &nodes[1])
                     .map(|link| link.fidelity)
-                    .ok_or(NetworkError::NoConnection)
+                    .ok_or(QnectError::no_connection(&nodes[0], &nodes[1]))
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>>>()?
             .into_iter()
             .product::<f64>();
 
@@ -470,11 +486,13 @@ impl QuantumNetwork {
         link_type: LinkType,
         fidelity: f64,
         generation_rate_hz: f64,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<()> {
         // Verify all nodes exist
         for node in &nodes {
             if !self.nodes.contains_key(*node) {
-                return Err(NetworkError::NodeNotFound);
+                return Err(QnectError::NodeNotFound {
+                    node: node.to_string(),
+                });
             }
         }
 
@@ -638,8 +656,8 @@ impl QuantumNetwork {
     }
 
     /// Get a mutable reference to a node
-    pub fn node_mut(&mut self, id: &str) -> Result<&mut QuantumNode, NetworkError> {
-        self.nodes.get_mut(id).ok_or(NetworkError::NodeNotFound)
+    pub fn node_mut(&mut self, id: &str) -> Result<&mut QuantumNode> {
+        self.nodes.get_mut(id).ok_or(QnectError::node_not_found(id))
     }
 
     /// Add quantum link between nodes
@@ -650,15 +668,17 @@ impl QuantumNetwork {
         link_type: LinkType,
         fidelity: f64,
         generation_rate_hz: f64,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<()> {
         if !(0.0..=1.0).contains(&fidelity) {
-            return Err(NetworkError::InvalidFidelity);
+            return Err(QnectError::InvalidFidelity { value: fidelity });
         }
         if generation_rate_hz < 0.0 {
-            return Err(NetworkError::InvalidGenerationRate);
+            return Err(QnectError::InvalidGenerationRate {
+                value: generation_rate_hz,
+            });
         }
         if !self.nodes.contains_key(node1) || !self.nodes.contains_key(node2) {
-            return Err(NetworkError::NodeNotFound);
+            return Err(QnectError::node_not_found(node1));
         }
 
         let latency_us = match &link_type {
@@ -683,11 +703,7 @@ impl QuantumNetwork {
     }
 
     /// Create an EPR pair between two nodes
-    pub fn create_epr_pair(
-        &mut self,
-        node1: &str,
-        node2: &str,
-    ) -> Result<(usize, usize), NetworkError> {
+    pub fn create_epr_pair(&mut self, node1: &str, node2: &str) -> Result<(usize, usize)> {
         match self.mode {
             NetworkMode::Legacy => {
                 // Original implementation
@@ -720,38 +736,30 @@ impl QuantumNetwork {
     }
 
     /// Create EPR pair in distributed mode
-    fn create_distributed_epr_pair(
-        &mut self,
-        node1: &str,
-        node2: &str,
-    ) -> Result<(usize, usize), NetworkError> {
+    fn create_distributed_epr_pair(&mut self, node1: &str, node2: &str) -> Result<(usize, usize)> {
         // Get link info first to ensure nodes are connected
         let link_id = format!("{}-{}", node1, node2);
         let _ = self
             .links
             .get(&link_id)
             .or_else(|| self.links.get(&format!("{}-{}", node2, node1)))
-            .ok_or(NetworkError::NoConnection)?;
+            .ok_or(QnectError::no_connection(node1, node2))?;
 
         // Allocate qubits on each node
         let q1 = {
             let node1_mut = self
                 .nodes
                 .get_mut(node1)
-                .ok_or(NetworkError::NodeNotFound)?;
-            node1_mut
-                .allocate_qubit()
-                .ok_or(NetworkError::NoFreeQubits)?
+                .ok_or(QnectError::node_not_found(node1))?;
+            node1_mut.allocate_qubit().ok_or(QnectError::NoFreeQubits)?
         };
 
         let q2 = {
             let node2_mut = self
                 .nodes
                 .get_mut(node2)
-                .ok_or(NetworkError::NodeNotFound)?;
-            node2_mut
-                .allocate_qubit()
-                .ok_or(NetworkError::NoFreeQubits)?
+                .ok_or(QnectError::node_not_found(node2))?;
+            node2_mut.allocate_qubit().ok_or(QnectError::NoFreeQubits)?
         };
 
         // NEW: Register a real nonlocal Bell resource
@@ -768,19 +776,251 @@ impl QuantumNetwork {
         Ok((q1, q2))
     }
 
+    /// Add a hub to the network
+    pub fn add_hub(&mut self, name: &str, location: (f64, f64)) -> Result<()> {
+        self.add_hub_with_config(name, location, 100, RoutingStrategy::ShortestPath)
+    }
+
+    /// Add a hub with custom configuration
+    pub fn add_hub_with_config(
+        &mut self,
+        name: &str,
+        _location: (f64, f64),
+        capacity: usize,
+        strategy: RoutingStrategy,
+    ) -> Result<()> {
+        // Create the hub node type
+        let _node_type = NodeType::Hub {
+            capacity,
+            routing_strategy: strategy,
+        };
+
+        // Add as a distributed node with hub capabilities
+        self.add_distributed_node(name, capacity * 4, BackendType::Stabilizer)
+            .map_err(|_e| QnectError::InsufficientNodes)?;
+
+        // Mark this node as a hub in metadata
+        if let Some(_node) = self.nodes.get_mut(name) {
+            // Store hub metadata (might need to add a metadata field to QuantumNode)
+            log::info!(" Added hub {} with capacity {}", name, capacity);
+        }
+
+        Ok(())
+    }
+
+    /// Connect a node to a hub
+    pub fn connect_to_hub(&mut self, node: &str, hub: &str, link_type: LinkType) -> Result<()> {
+        // Add the quantum link
+        self.add_quantum_link(
+            node, hub, link_type, 0.95,  // High fidelity for hub connections
+            100.0, // High bandwidth
+        )?;
+
+        log::info!(" Connected {} to hub {}", node, hub);
+        Ok(())
+    }
+
+    /// Route through a hub
+    pub async fn route_through_hub(
+        &mut self,
+        from: &str,
+        to: &str,
+        hub: &str,
+    ) -> Result<Vec<String>> {
+        // Verify all nodes exist
+        if !self.nodes.contains_key(from) {
+            return Err(QnectError::node_not_found(from));
+        }
+        if !self.nodes.contains_key(to) {
+            return Err(QnectError::node_not_found(to));
+        }
+        if !self.nodes.contains_key(hub) {
+            return Err(QnectError::node_not_found(hub));
+        }
+
+        // Verify connections to hub
+        if !self.has_link(from, hub) {
+            return Err(QnectError::no_connection(from, hub));
+        }
+        if !self.has_link(to, hub) {
+            return Err(QnectError::no_connection(hub, to));
+        }
+
+        // Return the path through hub
+        let path = vec![from.to_string(), hub.to_string(), to.to_string()];
+
+        log::debug!(" Routing {} → {} → {}", from, hub, to);
+        Ok(path)
+    }
+
+    /// Create EPR pair through a hub with REAL teleportation
+    pub async fn create_epr_pair_through_hub(
+        &mut self,
+        alice: &str,
+        bob: &str,
+        hub: &str,
+    ) -> Result<(usize, usize)> {
+        // Check both nodes are connected to hub
+        if !self.has_link(alice, hub) {
+            return Err(QnectError::no_connection(alice, hub));
+        }
+        if !self.has_link(bob, hub) {
+            return Err(QnectError::no_connection(bob, hub));
+        }
+
+        log::debug!(" Hub {} creating EPR pair for {} <-> {}", hub, alice, bob);
+
+        // Step 1: Allocate qubits at the hub
+        let hub_q1 = self.allocate_local_qubit(hub)?;
+        let hub_q2 = self.allocate_local_qubit(hub)?;
+
+        log::debug!(" Hub allocated qubits q{} and q{}", hub_q1, hub_q2);
+
+        // Step 2: Create Bell state at hub
+        if let Some(hub_node) = self.nodes.get_mut(hub) {
+            if let Some(system) = &mut hub_node.local_system {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        system.h(hub_q1).await?;
+                        system.cnot(hub_q1, hub_q2).await
+                    })
+                })
+                .map_err(|_| QnectError::invalid_operation("teleportation", "failed"))?;
+            }
+        }
+
+        log::debug!(
+            "  🔗 Hub created Bell pair between q{} and q{}",
+            hub_q1,
+            hub_q2
+        );
+
+        // Step 3: REAL TELEPORTATION - Teleport hub_q1
+        log::debug!(" Teleporting hub:q{} to {}...", hub_q1, alice);
+        let alice_q = self
+            .quantum_teleportation(hub, alice, hub_q1)
+            .await
+            .map_err(|e| {
+                log::error!(" Teleportation to {} failed: {}", hub_q1, e);
+                e
+            })?;
+        log::debug!("  ✓ {} received qubit q{}", hub_q1, alice_q);
+
+        // Step 4: REAL TELEPORTATION - Teleport hub_q2 to Bob
+        log::debug!(" Teleporting hub:q{} to Bob...", hub_q2);
+        let bob_q = self
+            .quantum_teleportation(hub, bob, hub_q2)
+            .await
+            .map_err(|e| {
+                log::error!(" Teleportation to Bob failed: {}", e);
+                e
+            })?;
+        log::debug!("Bob received qubit q{}", bob_q);
+
+        // Step 5: Register the entanglement
+        // The qubits are now at Alice and Bob, still entangled!
+        self.register_bell((alice.to_string(), alice_q), (bob.to_string(), bob_q));
+
+        log::debug!(
+            "✅ EPR pair established through hub: {}:q{} <-> {}:q{}",
+            alice,
+            alice_q,
+            bob,
+            bob_q
+        );
+
+        Ok((alice_q, bob_q))
+    }
+
+    /// Check if a link exists
+    pub fn has_link(&self, node1: &str, node2: &str) -> bool {
+        // Use hyphen, not underscore (matching link ID format)
+        let key1 = format!("{}-{}", node1, node2);
+        let key2 = format!("{}-{}", node2, node1);
+
+        self.links.contains_key(&key1) || self.links.contains_key(&key2)
+    }
+
+    /// Create EPR with automatic routing
+    pub async fn create_epr_auto_route(
+        &mut self,
+        alice: &str,
+        bob: &str,
+    ) -> Result<(usize, usize)> {
+        // First try direct connection
+        if self.has_link(alice, bob) {
+            return self.create_epr_pair(alice, bob);
+        }
+
+        // Find a hub they're both connected to
+        if let Some(common_hub) = self.find_common_hub(alice, bob) {
+            return self
+                .create_epr_pair_through_hub(alice, bob, &common_hub)
+                .await;
+        }
+
+        // No route found
+        Err(QnectError::no_connection(alice, bob))
+    }
+
+    /// Find a hub that both nodes connect to
+    pub fn find_common_hub(&self, node1: &str, node2: &str) -> Option<String> {
+        // Get all neighbors of node1
+        let node1_neighbors: Vec<String> = self
+            .links
+            .values()
+            .filter_map(|link| {
+                if link.node1 == node1 {
+                    Some(link.node2.clone())
+                } else if link.node2 == node1 {
+                    Some(link.node1.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Get all neighbors of node2
+        let node2_neighbors: Vec<String> = self
+            .links
+            .values()
+            .filter_map(|link| {
+                if link.node1 == node2 {
+                    Some(link.node2.clone())
+                } else if link.node2 == node2 {
+                    Some(link.node1.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Find common neighbor (hub)
+        for neighbor in node1_neighbors {
+            if node2_neighbors.contains(&neighbor) {
+                // Check if it's actually a hub
+                if neighbor.contains("Hub") {
+                    return Some(neighbor);
+                }
+            }
+        }
+
+        None
+    }
+
     // /// Create EPR pair in distributed mode
     // fn create_distributed_epr_pair(
     //     &mut self,
     //     node1: &str,
     //     node2: &str,
-    // ) -> Result<(usize, usize), NetworkError> {
+    // ) -> Result<(usize, usize)> {
     //     // Get link info first to ensure nodes are connected
     //     let link_id = format!("{}-{}", node1, node2);
     //     let link = self
     //         .links
     //         .get(&link_id)
     //         .or_else(|| self.links.get(&format!("{}-{}", node2, node1)))
-    //         .ok_or(NetworkError::NoConnection)?
+    //         .ok_or(QnectError::NoConnection)?
     //         .clone(); // Clone to avoid borrow issues
 
     //     // Allocate qubits on each node
@@ -788,20 +1028,21 @@ impl QuantumNetwork {
     //         let node1_mut = self
     //             .nodes
     //             .get_mut(node1)
-    //             .ok_or(NetworkError::NodeNotFound)?;
+    //                             .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
     //         node1_mut
     //             .allocate_qubit()
-    //             .ok_or(NetworkError::NoFreeQubits)?
+    //             .ok_or(QnectError::NoFreeQubits)?
     //     };
 
     //     let q2 = {
     //         let node2_mut = self
     //             .nodes
     //             .get_mut(node2)
-    //             .ok_or(NetworkError::NodeNotFound)?;
+    //             .ok_or(QnectError::NodeNotFound)?;
     //         node2_mut
     //             .allocate_qubit()
-    //             .ok_or(NetworkError::NoFreeQubits)?
+    //             .ok_or(QnectError::NoFreeQubits)?
     //     };
 
     //     // In distributed mode, EPR creation happens at the physical layer
@@ -811,12 +1052,12 @@ impl QuantumNetwork {
     //         let node1_mut = self
     //             .nodes
     //             .get_mut(node1)
-    //             .ok_or(NetworkError::NodeNotFound)?;
+    //             .ok_or(QnectError::NodeNotFound)?;
     //         if let Some(system) = &mut node1_mut.local_system {
     //             tokio::task::block_in_place(|| {
     //                 tokio::runtime::Handle::current().block_on(async { system.h(q1).await })
     //             })
-    //             .map_err(|_| NetworkError::GateApplicationFailed)?;
+    //             .map_err(|_| QnectError::GateApplicationFailed)?;
     //         }
     //     }
 
@@ -825,7 +1066,7 @@ impl QuantumNetwork {
     //         let node1_mut = self
     //             .nodes
     //             .get_mut(node1)
-    //             .ok_or(NetworkError::NodeNotFound)?;
+    //             .ok_or(QnectError::NodeNotFound)?;
     //         node1_mut
     //             .entanglement_registry
     //             .insert(q1, RemoteEntanglement {
@@ -841,7 +1082,7 @@ impl QuantumNetwork {
     //         let node2_mut = self
     //             .nodes
     //             .get_mut(node2)
-    //             .ok_or(NetworkError::NodeNotFound)?;
+    //             .ok_or(QnectError::NodeNotFound)?;
     //         node2_mut
     //             .entanglement_registry
     //             .insert(q2, RemoteEntanglement {
@@ -871,12 +1112,12 @@ impl QuantumNetwork {
     //     left_epr: usize,
     //     right_node: &str,
     //     right_epr: usize,
-    // ) -> Result<(), NetworkError> {
+    // ) -> Result<()> {
     //     // Bell measurement at repeater
     //     let repeater = self
     //         .nodes
     //         .get_mut(repeater_node)
-    //         .ok_or(NetworkError::NodeNotFound)?;
+    //         .ok_or(QnectError::NodeNotFound)?;
     //     if let Some(system) = &mut repeater.local_system {
     //         tokio::task::block_in_place(|| {
     //             tokio::runtime::Handle::current().block_on(async {
@@ -885,7 +1126,7 @@ impl QuantumNetwork {
     //                 Ok::<(), QnectError>(())
     //             })
     //         })
-    //         .map_err(|_| NetworkError::GateApplicationFailed)?;
+    //         .map_err(|_| QnectError::GateApplicationFailed)?;
     //     }
 
     //     // Measure both qubits
@@ -897,7 +1138,7 @@ impl QuantumNetwork {
     //         let repeater = self
     //             .nodes
     //             .get(repeater_node)
-    //             .ok_or(NetworkError::NodeNotFound)?;
+    //             .ok_or(QnectError::NodeNotFound)?;
     //         repeater.send_bit(left_node, m1).await?;
     //         repeater.send_bit(left_node, m2).await?;
     //         repeater.send_bit(right_node, m1).await?;
@@ -914,15 +1155,17 @@ impl QuantumNetwork {
         &mut self,
         source: &str,
         target: &str,
-    ) -> Result<(usize, usize), NetworkError> {
+    ) -> Result<(usize, usize)> {
         let path = self
             .find_shortest_path(source, target)
-            .ok_or(NetworkError::NoConnection)?;
-
+            .ok_or(QnectError::no_connection(source, target))?;
         // Check fidelity before proceeding
         let total_fidelity = self.calculate_path_fidelity(&path)?;
         if total_fidelity < 0.5 {
-            return Err(NetworkError::FidelityTooLow);
+            return Err(QnectError::FidelityTooLow {
+                value: total_fidelity,
+                minimum: 0.5,
+            });
         }
 
         if path.len() == 2 {
@@ -953,7 +1196,7 @@ impl QuantumNetwork {
                 let repeater_node = self
                     .nodes
                     .get_mut(repeater)
-                    .ok_or(NetworkError::NodeNotFound)?;
+                    .ok_or(QnectError::node_not_found(repeater))?;
                 if let Some(system) = &mut repeater_node.local_system {
                     tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current().block_on(async {
@@ -962,7 +1205,10 @@ impl QuantumNetwork {
                             Ok::<(), QnectError>(())
                         })
                     })
-                    .map_err(|_| NetworkError::GateApplicationFailed)?;
+                    .map_err(|_| QnectError::GateApplicationFailed {
+                        gate: "H".into(),
+                        reason: "application failed".into(),
+                    })?;
                 }
             }
 
@@ -972,7 +1218,10 @@ impl QuantumNetwork {
 
             // Send corrections to endpoints and log the communication
             {
-                let repeater_node = self.nodes.get(repeater).ok_or(NetworkError::NodeNotFound)?;
+                let repeater_node = self
+                    .nodes
+                    .get(repeater)
+                    .ok_or(QnectError::node_not_found(repeater))?;
 
                 // Send measurement results to source
                 repeater_node.send_bit(source, m1).await?;
@@ -1040,13 +1289,14 @@ impl QuantumNetwork {
                 let repeater_node = self
                     .nodes
                     .get_mut(repeater)
-                    .ok_or(NetworkError::NodeNotFound)?;
+                    .ok_or(QnectError::node_not_found(repeater))?;
+
                 repeater_node
                     .deallocate_qubit(left_epr)
-                    .map_err(|_| NetworkError::QubitNotAllocated)?;
+                    .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
                 repeater_node
                     .deallocate_qubit(right_epr)
-                    .map_err(|_| NetworkError::QubitNotAllocated)?;
+                    .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
             }
         }
 
@@ -1055,7 +1305,7 @@ impl QuantumNetwork {
             let source_node = self
                 .nodes
                 .get_mut(source)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
 
             // Receive all measurement results from repeaters
             for i in 1..path.len() - 1 {
@@ -1079,7 +1329,7 @@ impl QuantumNetwork {
             let target_node = self
                 .nodes
                 .get_mut(target)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found(target))?;
 
             // Receive all measurement results from repeaters
             for i in 1..path.len() - 1 {
@@ -1118,7 +1368,7 @@ impl QuantumNetwork {
         from: &str,
         to: &str,
         data: Vec<u8>,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<()> {
         // In real quantum networks, classical communication is "free" via internet
         // All nodes have direct classical connections to all other nodes
 
@@ -1130,23 +1380,22 @@ impl QuantumNetwork {
         });
 
         // Just use the direct classical connection
-        let from_node = self.nodes.get(from).ok_or(NetworkError::NodeNotFound)?;
+        let from_node = self
+            .nodes
+            .get(from)
+            .ok_or(QnectError::node_not_found("node not found".to_string()))?;
         from_node.send_classical(to, data).await
     }
 
-    pub async fn blind_computation_demo(
-        &mut self,
-        client: &str,
-        server: &str,
-    ) -> Result<u8, NetworkError> {
+    pub async fn blind_computation_demo(&mut self, client: &str, server: &str) -> Result<u8> {
         // Client prepares random qubits
         let client_qubit = {
             let node = self
                 .nodes
                 .get_mut(client)
-                .ok_or(NetworkError::NodeNotFound)?;
-            let q = node.allocate_qubit().ok_or(NetworkError::NoFreeQubits)?;
-            q
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
+            node.allocate_qubit().ok_or(QnectError::NoFreeQubits)?
         };
 
         // Apply random rotations to blind the state
@@ -1165,7 +1414,7 @@ impl QuantumNetwork {
             let client_node = self
                 .nodes
                 .get_mut(client)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
             if let Some(system) = &mut client_node.local_system {
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -1174,7 +1423,10 @@ impl QuantumNetwork {
                         Ok::<(), QnectError>(())
                     })
                 })
-                .map_err(|_| NetworkError::GateApplicationFailed)?;
+                .map_err(|_| QnectError::GateApplicationFailed {
+                    gate: "unknown".into(),
+                    reason: "application failed".into(),
+                })?;
             }
         }
 
@@ -1183,7 +1435,11 @@ impl QuantumNetwork {
         let m1 = self.measure(client, client_epr)?;
 
         {
-            let client_node = self.nodes.get(client).ok_or(NetworkError::NodeNotFound)?;
+            let client_node = self
+                .nodes
+                .get(client)
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             // In multi-hop, we need to route through the network
             // For now, assume classical communication can route
             client_node.send_bit(server, m0).await?;
@@ -1195,7 +1451,8 @@ impl QuantumNetwork {
             let server_node = self
                 .nodes
                 .get_mut(server)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             let c0 = server_node.recv_bit(client).await?;
             let c1 = server_node.recv_bit(client).await?;
 
@@ -1218,22 +1475,24 @@ impl QuantumNetwork {
             let client_node = self
                 .nodes
                 .get_mut(client)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             client_node
                 .deallocate_qubit(client_qubit)
-                .map_err(|_| NetworkError::QubitNotAllocated)?;
+                .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
             client_node
                 .deallocate_qubit(client_epr)
-                .map_err(|_| NetworkError::QubitNotAllocated)?;
+                .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
         }
         {
             let server_node = self
                 .nodes
                 .get_mut(server)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             server_node
                 .deallocate_qubit(server_epr)
-                .map_err(|_| NetworkError::QubitNotAllocated)?;
+                .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
         }
 
         Ok(result)
@@ -1245,15 +1504,18 @@ impl QuantumNetwork {
         client: &str,
         server: &str,
         pattern: BlindComputationPattern,
-    ) -> Result<Vec<u8>, NetworkError> {
+    ) -> Result<Vec<u8>> {
         // Verify fidelity for computation
         let path = self
             .find_shortest_path(client, server)
-            .ok_or(NetworkError::NoConnection)?;
+            .ok_or(QnectError::no_connection(client, server))?;
         let fidelity = self.calculate_path_fidelity(&path)?;
         if fidelity < 0.7 {
             // Higher threshold for computation
-            return Err(NetworkError::FidelityTooLow);
+            return Err(QnectError::FidelityTooLow {
+                value: fidelity,
+                minimum: 0.7,
+            });
         }
 
         // Calculate number of qubits from the graph
@@ -1291,13 +1553,17 @@ impl QuantumNetwork {
             let server_node = self
                 .nodes
                 .get_mut(server)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             if let Some(system) = &mut server_node.local_system {
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current()
                         .block_on(async { system.cz(server_qubits[*i], server_qubits[*j]).await })
                 })
-                .map_err(|_| NetworkError::GateApplicationFailed)?;
+                .map_err(|_| QnectError::GateApplicationFailed {
+                    gate: "unknown".into(),
+                    reason: "application failed".into(),
+                })?;
             }
         }
 
@@ -1316,7 +1582,8 @@ impl QuantumNetwork {
             let server_node = self
                 .nodes
                 .get_mut(server)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             let received_angle_bytes = server_node.recv_classical(client).await?;
             self.protocol_history.push(NetworkOperation::RecvClassical {
                 node: server.to_string(),
@@ -1325,7 +1592,7 @@ impl QuantumNetwork {
             let received_angle = f64::from_le_bytes(
                 received_angle_bytes
                     .try_into()
-                    .map_err(|_| NetworkError::EmptyMessage)?,
+                    .map_err(|_| QnectError::EmptyMessage)?,
             );
 
             // Apply rotation and measure
@@ -1348,7 +1615,8 @@ impl QuantumNetwork {
                 let client_node = self
                     .nodes
                     .get_mut(client)
-                    .ok_or(NetworkError::NodeNotFound)?;
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                 let _ = client_node.recv_bit(server).await?;
 
                 // Log the receive
@@ -1529,7 +1797,7 @@ impl QuantumNetwork {
         }
 
         // Network statistics
-        output.push_str(&format!("\nStatistics:\n"));
+        output.push_str("\nStatistics:\n");
         output.push_str(&format!("  Total nodes: {}\n", self.nodes.len()));
         output.push_str(&format!("  Total links: {}\n", self.links.len()));
         output.push_str(&format!("  Network mode: {:?}\n", self.mode));
@@ -1538,10 +1806,13 @@ impl QuantumNetwork {
     }
 
     /// Get a free qubit from a node
-    pub fn get_free_qubit(&mut self, node_id: &str) -> Result<usize, NetworkError> {
+    pub fn get_free_qubit(&mut self, node_id: &str) -> Result<usize> {
         match self.mode {
             NetworkMode::Legacy => {
-                let node = self.nodes.get(node_id).ok_or(NetworkError::NodeNotFound)?;
+                let node = self
+                    .nodes
+                    .get(node_id)
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
 
                 // In legacy mode, find a qubit that's not currently entangled
                 for &qubit in &node.qubits {
@@ -1559,15 +1830,16 @@ impl QuantumNetwork {
                         return Ok(qubit);
                     }
                 }
-                Err(NetworkError::NoFreeQubits)
+                Err(QnectError::NoFreeQubits)
             }
             NetworkMode::Distributed => {
                 // Must allocate, not just peek!
                 let node = self
                     .nodes
                     .get_mut(node_id)
-                    .ok_or(NetworkError::NodeNotFound)?;
-                node.allocate_qubit().ok_or(NetworkError::NoFreeQubits)
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
+                node.allocate_qubit().ok_or(QnectError::NoFreeQubits)
             }
         }
     }
@@ -1578,7 +1850,7 @@ impl QuantumNetwork {
         node_id: &str,
         qubit_idx: usize,
         gate: Gate1Q,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<()> {
         if let Some(ghz_id) = self.is_ghz_qubit(node_id, qubit_idx) {
             let ghz_arc = self.nonlocal.ghzs.get(&ghz_id).unwrap().clone();
             let mut ghz = ghz_arc.lock().unwrap();
@@ -1605,7 +1877,7 @@ impl QuantumNetwork {
                     return Ok(());
                 }
                 _ => {
-                    return Err(NetworkError::InvalidOperation);
+                    return Err(QnectError::invalid_operation("operation", "invalid"));
                 }
             }
         }
@@ -1615,7 +1887,7 @@ impl QuantumNetwork {
             let bell_arc = self.nonlocal.bells.get(&bell_id).unwrap().clone();
             let mut bell = bell_arc.lock().unwrap();
             if !bell.alive {
-                return Err(NetworkError::InvalidOperation);
+                return Err(QnectError::invalid_operation("operation", "invalid"));
             }
 
             // Pick side
@@ -1632,7 +1904,7 @@ impl QuantumNetwork {
                 Gate1Q::H => std::mem::swap(&mut pf.ax, &mut pf.az),
                 Gate1Q::S => pf.az ^= pf.ax, // X->XZ, Z->Z
                 Gate1Q::Y | Gate1Q::T | Gate1Q::Rx(_) | Gate1Q::Ry(_) | Gate1Q::Rz(_) => {
-                    return Err(NetworkError::InvalidOperation);
+                    return Err(QnectError::invalid_operation("operation", "invalid"));
                 }
             }
             self.protocol_history.push(NetworkOperation::LocalGate {
@@ -1647,7 +1919,10 @@ impl QuantumNetwork {
             NetworkMode::Legacy => {
                 // Original implementation
                 if self.qubit_ownership.get(&qubit_idx) != Some(&node_id.to_string()) {
-                    return Err(NetworkError::QubitNotOwned);
+                    return Err(QnectError::QubitNotOwned {
+                        node: node_id.to_owned(),
+                        qubit: qubit_idx,
+                    });
                 }
 
                 self.state.apply_single_qubit_gate(qubit_idx, gate);
@@ -1665,10 +1940,13 @@ impl QuantumNetwork {
                 let node = self
                     .nodes
                     .get_mut(node_id)
-                    .ok_or(NetworkError::NodeNotFound)?;
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
 
                 if !node.qubit_allocator.allocated_qubits.contains(&qubit_idx) {
-                    return Err(NetworkError::QubitNotOwned);
+                    return Err(QnectError::QubitNotOwned {
+                        node: node_id.to_owned(),
+                        qubit: qubit_idx,
+                    });
                 }
 
                 // Apply on node's local system
@@ -1689,9 +1967,14 @@ impl QuantumNetwork {
                             }
                         })
                     })
-                    .map_err(|_| NetworkError::GateApplicationFailed)?;
+                    .map_err(|_| QnectError::GateApplicationFailed {
+                        gate: "unknown".into(),
+                        reason: "application failed".into(),
+                    })?;
                 } else {
-                    return Err(NetworkError::NoLocalSystem);
+                    return Err(QnectError::NoLocalSystem {
+                        node: node_id.to_string(),
+                    });
                 }
 
                 // Record operation
@@ -1707,7 +1990,7 @@ impl QuantumNetwork {
     }
 
     /// Measure a qubit at a node
-    pub fn measure(&mut self, node_id: &str, qubit_idx: usize) -> Result<u8, NetworkError> {
+    pub fn measure(&mut self, node_id: &str, qubit_idx: usize) -> Result<u8> {
         if let Some(ghz_id) = self.is_ghz_qubit(node_id, qubit_idx) {
             use rand::Rng;
             let ghz_arc = self.nonlocal.ghzs.get(&ghz_id).unwrap().clone();
@@ -1718,7 +2001,7 @@ impl QuantumNetwork {
             // Check if this is X-basis measurement
             let x_basis = ghz.pending_x_basis.contains(&key);
             if !x_basis {
-                return Err(NetworkError::InvalidOperation);
+                return Err(QnectError::invalid_operation("operation", "invalid"));
             }
 
             // Calculate measurement result
@@ -1760,7 +2043,7 @@ impl QuantumNetwork {
             let mut bell = bell_arc.lock().unwrap();
 
             if !bell.alive {
-                return Err(NetworkError::InvalidOperation);
+                return Err(QnectError::invalid_operation("operation", "invalid"));
             }
 
             // Z-basis measurement (random outcome)
@@ -1787,7 +2070,10 @@ impl QuantumNetwork {
             NetworkMode::Legacy => {
                 // Original implementation
                 if self.qubit_ownership.get(&qubit_idx) != Some(&node_id.to_string()) {
-                    return Err(NetworkError::QubitNotOwned);
+                    return Err(QnectError::QubitNotOwned {
+                        node: node_id.to_owned(),
+                        qubit: qubit_idx,
+                    });
                 }
 
                 let result = self.state.measure(qubit_idx);
@@ -1798,10 +2084,13 @@ impl QuantumNetwork {
                 let node = self
                     .nodes
                     .get_mut(node_id)
-                    .ok_or(NetworkError::NodeNotFound)?;
+                    .ok_or(QnectError::node_not_found(node_id))?;
 
                 if !node.qubit_allocator.allocated_qubits.contains(&qubit_idx) {
-                    return Err(NetworkError::QubitNotOwned);
+                    return Err(QnectError::QubitNotOwned {
+                        node: node_id.to_owned(),
+                        qubit: qubit_idx,
+                    });
                 }
 
                 let result = if let Some(system) = &mut node.local_system {
@@ -1809,9 +2098,11 @@ impl QuantumNetwork {
                         tokio::runtime::Handle::current()
                             .block_on(async { system.measure(qubit_idx).await })
                     })
-                    .map_err(|_| NetworkError::MeasurementFailed)?
+                    .map_err(|_| QnectError::MeasurementFailed)?
                 } else {
-                    return Err(NetworkError::NoLocalSystem);
+                    return Err(QnectError::NoLocalSystem {
+                        node: node_id.into(),
+                    });
                 };
 
                 // Clear entanglement registry for this qubit
@@ -1856,22 +2147,29 @@ impl QuantumNetwork {
         alice: &str,
         bob: &str,
         alice_qubit: usize,
-    ) -> Result<usize, NetworkError> {
+    ) -> Result<usize> {
         match self.mode {
             NetworkMode::Legacy => {
                 // Original implementation for legacy mode
                 if self.qubit_ownership.get(&alice_qubit) != Some(&alice.to_string()) {
-                    return Err(NetworkError::QubitNotOwned);
+                    return Err(QnectError::QubitNotOwned {
+                        node: alice.to_owned(),
+                        qubit: alice_qubit,
+                    });
                 }
 
                 // Find a free qubit for Alice's EPR half
-                let alice_node = self.nodes.get(alice).ok_or(NetworkError::NodeNotFound)?;
+                let alice_node = self
+                    .nodes
+                    .get(alice)
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                 let alice_epr = alice_node
                     .qubits
                     .iter()
                     .find(|&&q| q != alice_qubit)
                     .copied()
-                    .ok_or(NetworkError::NoFreeQubits)?;
+                    .ok_or(QnectError::NoFreeQubits)?;
 
                 // Get Bob's EPR half
                 let bob_epr = self.get_free_qubit(bob)?;
@@ -1891,12 +2189,20 @@ impl QuantumNetwork {
                 let m1 = self.state.measure(alice_epr);
 
                 // Send classical bits
-                let alice_node = self.nodes.get(alice).ok_or(NetworkError::NodeNotFound)?;
+                let alice_node = self
+                    .nodes
+                    .get(alice)
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                 alice_node.send_bit(bob, m0).await?;
                 alice_node.send_bit(bob, m1).await?;
 
                 // Bob receives and applies corrections
-                let bob_node = self.nodes.get_mut(bob).ok_or(NetworkError::NodeNotFound)?;
+                let bob_node = self
+                    .nodes
+                    .get_mut(bob)
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                 let c0 = bob_node.recv_bit(alice).await?;
                 let c1 = bob_node.recv_bit(alice).await?;
 
@@ -1911,13 +2217,20 @@ impl QuantumNetwork {
             }
             NetworkMode::Distributed => {
                 // Verify Alice owns the qubit
-                let alice_node = self.nodes.get(alice).ok_or(NetworkError::NodeNotFound)?;
+                let alice_node = self
+                    .nodes
+                    .get(alice)
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                 if !alice_node
                     .qubit_allocator
                     .allocated_qubits
                     .contains(&alice_qubit)
                 {
-                    return Err(NetworkError::QubitNotOwned);
+                    return Err(QnectError::QubitNotOwned {
+                        node: alice.to_owned(),
+                        qubit: alice_qubit,
+                    });
                 }
 
                 // Check if nodes are directly connected
@@ -1936,7 +2249,8 @@ impl QuantumNetwork {
                     let alice_node = self
                         .nodes
                         .get_mut(alice)
-                        .ok_or(NetworkError::NodeNotFound)?;
+                        .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                     if let Some(system) = &mut alice_node.local_system {
                         tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current().block_on(async {
@@ -1945,7 +2259,12 @@ impl QuantumNetwork {
                                 Ok::<(), QnectError>(())
                             })
                         })
-                        .map_err(|_| NetworkError::GateApplicationFailed)?;
+                        .map_err(|_| {
+                            QnectError::GateApplicationFailed {
+                                gate: "unknown".into(),
+                                reason: "application failed".into(),
+                            }
+                        })?;
                     }
                 }
 
@@ -1954,12 +2273,20 @@ impl QuantumNetwork {
                 let m1 = self.measure(alice, alice_epr)?;
 
                 // Send classical bits to Bob (classical is always connected)
-                let alice_node = self.nodes.get(alice).ok_or(NetworkError::NodeNotFound)?;
+                let alice_node = self
+                    .nodes
+                    .get(alice)
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                 alice_node.send_bit(bob, m0).await?;
                 alice_node.send_bit(bob, m1).await?;
 
                 // Bob receives and applies corrections
-                let bob_node = self.nodes.get_mut(bob).ok_or(NetworkError::NodeNotFound)?;
+                let bob_node = self
+                    .nodes
+                    .get_mut(bob)
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                 let c0 = bob_node.recv_bit(alice).await?;
                 let c1 = bob_node.recv_bit(alice).await?;
 
@@ -1976,13 +2303,14 @@ impl QuantumNetwork {
                     let alice_node = self
                         .nodes
                         .get_mut(alice)
-                        .ok_or(NetworkError::NodeNotFound)?;
+                        .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                     alice_node
                         .deallocate_qubit(alice_qubit)
-                        .map_err(|_| NetworkError::QubitNotAllocated)?;
+                        .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
                     alice_node
                         .deallocate_qubit(alice_epr)
-                        .map_err(|_| NetworkError::QubitNotAllocated)?;
+                        .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
                 }
 
                 Ok(bob_epr)
@@ -1990,12 +2318,9 @@ impl QuantumNetwork {
         }
     }
 
-    pub async fn create_distributed_ghz(
-        &mut self,
-        nodes: Vec<&str>,
-    ) -> Result<Vec<usize>, NetworkError> {
+    pub async fn create_distributed_ghz(&mut self, nodes: Vec<&str>) -> Result<Vec<usize>> {
         if nodes.len() < 2 {
-            return Err(NetworkError::InsufficientNodes);
+            return Err(QnectError::InsufficientNodes);
         }
 
         match self.mode {
@@ -2026,9 +2351,9 @@ impl QuantumNetwork {
                     let q = self
                         .nodes
                         .get_mut(*n)
-                        .ok_or(NetworkError::NodeNotFound)?
+                        .ok_or(QnectError::node_not_found("node not found".to_string()))?
                         .allocate_qubit()
-                        .ok_or(NetworkError::NoFreeQubits)?;
+                        .ok_or(QnectError::NoFreeQubits)?;
                     qubits.push(((*n).to_string(), q));
                 }
 
@@ -2044,9 +2369,9 @@ impl QuantumNetwork {
     // pub async fn create_distributed_ghz(
     //     &mut self,
     //     nodes: Vec<&str>,
-    // ) -> Result<Vec<usize>, NetworkError> {
+    // ) -> Result<Vec<usize>> {
     //     if nodes.len() < 2 {
-    //         return Err(NetworkError::InsufficientNodes);
+    //         return Err(QnectError::InsufficientNodes);
     //     }
 
     //     match self.mode {
@@ -2079,10 +2404,11 @@ impl QuantumNetwork {
     //                 let node_mut = self
     //                     .nodes
     //                     .get_mut(*node)
-    //                     .ok_or(NetworkError::NodeNotFound)?;
+    //                                     .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
     //                 let qubit = node_mut
     //                     .allocate_qubit()
-    //                     .ok_or(NetworkError::NoFreeQubits)?;
+    //                     .ok_or(QnectError::NoFreeQubits)?;
     //                 ghz_qubits.push((node.to_string(), qubit));
     //             }
 
@@ -2115,7 +2441,7 @@ impl QuantumNetwork {
     //                     // Find a path and use multi-hop operations
     //                     let path = self
     //                         .find_shortest_path(center_node, target_node)
-    //                         .ok_or(NetworkError::NoConnection)?;
+    //                         .ok_or(QnectError::NoConnection)?;
 
     //                     if path.len() == 2 {
     //                         // Direct connection (should have been caught above)
@@ -2138,15 +2464,15 @@ impl QuantumNetwork {
     //                             let center_mut = self
     //                                 .nodes
     //                                 .get_mut(center_node)
-    //                                 .ok_or(NetworkError::NodeNotFound)?;
+    //                                                 .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
     //                             if let Some(system) = &mut center_mut.local_system {
     //                                 tokio::task::block_in_place(|| {
     //                                     tokio::runtime::Handle::current().block_on(async {
     //                                         system.cnot(*center_qubit, epr1).await
     //                                     })
     //                                 })
-    //                                 .map_err(|_| NetworkError::GateApplicationFailed)?;
-    //                             }
+    //                 .map_err(|_| QnectError::GateApplicationFailed { gate: "unknown".into(), reason: "application failed".into() })?;    //                             }
     //                         }
 
     //                         // Measure EPR qubit at center
@@ -2157,7 +2483,8 @@ impl QuantumNetwork {
     //                             let center_ref = self
     //                                 .nodes
     //                                 .get(center_node)
-    //                                 .ok_or(NetworkError::NodeNotFound)?;
+    //                                                 .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
     //                             center_ref.send_bit(target_node, m).await?;
     //                         }
 
@@ -2166,7 +2493,8 @@ impl QuantumNetwork {
     //                             let target_mut = self
     //                                 .nodes
     //                                 .get_mut(target_node)
-    //                                 .ok_or(NetworkError::NodeNotFound)?;
+    //                                                 .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
     //                             let correction = target_mut.recv_bit(center_node).await?;
 
     //                             if let Some(system) = &mut target_mut.local_system {
@@ -2179,25 +2507,23 @@ impl QuantumNetwork {
     //                                         Ok::<(), QnectError>(())
     //                                     })
     //                                 })
-    //                                 .map_err(|_| NetworkError::GateApplicationFailed)?;
-    //                             }
+    //                 .map_err(|_| QnectError::GateApplicationFailed { gate: "unknown".into(), reason: "application failed".into() })?;    //                             }
 
     //                             // Clean up EPR qubit
     //                             target_mut
     //                                 .deallocate_qubit(epr2)
-    //                                 .map_err(|_| NetworkError::QubitNotAllocated)?;
-    //                         }
+    //             .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;    //                         }
 
     //                         // Clean up center's EPR qubit
     //                         {
     //                             let center_mut = self
     //                                 .nodes
     //                                 .get_mut(center_node)
-    //                                 .ok_or(NetworkError::NodeNotFound)?;
+    //                                                 .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
     //                             center_mut
     //                                 .deallocate_qubit(epr1)
-    //                                 .map_err(|_| NetworkError::QubitNotAllocated)?;
-    //                         }
+    //             .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;    //                         }
     //                     }
     //                 }
     //             }
@@ -2215,30 +2541,38 @@ impl QuantumNetwork {
         control_qubit: usize,
         target_node: &str,
         target_qubit: usize,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<()> {
         // Verify ownership
         let control_node_ref = self
             .nodes
             .get(control_node)
-            .ok_or(NetworkError::NodeNotFound)?;
+            .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
         if !control_node_ref
             .qubit_allocator
             .allocated_qubits
             .contains(&control_qubit)
         {
-            return Err(NetworkError::QubitNotOwned);
+            return Err(QnectError::QubitNotOwned {
+                node: control_node.to_owned(),
+                qubit: control_qubit,
+            });
         }
 
         let target_node_ref = self
             .nodes
             .get(target_node)
-            .ok_or(NetworkError::NodeNotFound)?;
+            .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
         if !target_node_ref
             .qubit_allocator
             .allocated_qubits
             .contains(&target_qubit)
         {
-            return Err(NetworkError::QubitNotOwned);
+            return Err(QnectError::QubitNotOwned {
+                node: target_node.to_owned(),
+                qubit: target_qubit,
+            });
         }
 
         // Gate teleportation protocol for CNOT
@@ -2251,7 +2585,8 @@ impl QuantumNetwork {
             let control_node_mut = self
                 .nodes
                 .get_mut(control_node)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             if let Some(system) = &mut control_node_mut.local_system {
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -2264,7 +2599,10 @@ impl QuantumNetwork {
                         Ok::<(), QnectError>(())
                     })
                 })
-                .map_err(|_| NetworkError::GateApplicationFailed)?;
+                .map_err(|_| QnectError::GateApplicationFailed {
+                    gate: "unknown".into(),
+                    reason: "application failed".into(),
+                })?;
             }
         }
 
@@ -2276,7 +2614,8 @@ impl QuantumNetwork {
             let control_node_ref = self
                 .nodes
                 .get(control_node)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             control_node_ref.send_bit(target_node, m1).await?;
             control_node_ref.send_bit(target_node, m2).await?;
         }
@@ -2286,7 +2625,8 @@ impl QuantumNetwork {
             let target_node_mut = self
                 .nodes
                 .get_mut(target_node)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             let c1 = target_node_mut.recv_bit(control_node).await?;
             let c2 = target_node_mut.recv_bit(control_node).await?;
 
@@ -2308,16 +2648,19 @@ impl QuantumNetwork {
                         Ok::<(), QnectError>(())
                     })
                 })
-                .map_err(|_| NetworkError::GateApplicationFailed)?;
+                .map_err(|_| QnectError::GateApplicationFailed {
+                    gate: "unknown".into(),
+                    reason: "application failed".into(),
+                })?;
             }
 
             // Clean up EPR qubits
             target_node_mut
                 .deallocate_qubit(tgt_epr1)
-                .map_err(|_| NetworkError::QubitNotAllocated)?;
+                .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
             target_node_mut
                 .deallocate_qubit(tgt_epr2)
-                .map_err(|_| NetworkError::QubitNotAllocated)?;
+                .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
         }
 
         // Clean up control node EPR qubits
@@ -2325,13 +2668,14 @@ impl QuantumNetwork {
             let control_node_mut = self
                 .nodes
                 .get_mut(control_node)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             control_node_mut
                 .deallocate_qubit(ctrl_epr1)
-                .map_err(|_| NetworkError::QubitNotAllocated)?;
+                .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
             control_node_mut
                 .deallocate_qubit(ctrl_epr2)
-                .map_err(|_| NetworkError::QubitNotAllocated)?;
+                .map_err(|_| QnectError::QubitNotAllocated { qubit: 0 })?;
         }
 
         Ok(())
@@ -2386,7 +2730,7 @@ impl QuantumNetwork {
                         ));
                         epr_sockets.get_mut(node_id).unwrap().insert(peer.clone());
                     }
-                    prog.push_str("\n");
+                    prog.push('\n');
                 }
             }
         }
@@ -2427,7 +2771,7 @@ impl QuantumNetwork {
                     if let Some(prog) = programs.get_mut(node) {
                         // Check if qubit needs declaration
                         if !declared_qubits.get(node).unwrap().contains(qubit) {
-                            prog.push_str(&format!("    # Allocate local qubit\n"));
+                            prog.push_str("    # Allocate local qubit\n");
                             prog.push_str(&format!("    q{} = app.allocate_qubit()\n", qubit));
                             declared_qubits.get_mut(node).unwrap().insert(*qubit);
                         }
@@ -2449,7 +2793,7 @@ impl QuantumNetwork {
                             other => {
                                 let netqasm_gate = gate_to_netqasm(other);
                                 if netqasm_gate.is_empty() {
-                                    eprintln!(
+                                    log::debug!(
                                         "Error: Cannot generate NetQASM for gate '{}'",
                                         other
                                     );
@@ -2475,7 +2819,7 @@ impl QuantumNetwork {
 
                         // Only allocate if not already declared
                         if !declared_qubits.get(node).unwrap().contains(qubit) {
-                            prog.push_str(&format!("    # Allocate qubit for measurement\n"));
+                            prog.push_str("    # Allocate qubit for measurement\n");
                             prog.push_str(&format!("    q{} = app.allocate_qubit()\n", qubit));
                             declared_qubits.get_mut(node).unwrap().insert(*qubit);
                         }
@@ -2571,9 +2915,9 @@ impl QuantumNetwork {
         sender: &str,
         participants: Vec<&str>,
         bit: u8,
-    ) -> Result<u8, NetworkError> {
+    ) -> Result<u8> {
         if !participants.contains(&sender) {
-            return Err(NetworkError::NodeNotFound);
+            return Err(QnectError::node_not_found(sender));
         }
 
         // Step 1: Create shared GHZ state
@@ -2620,7 +2964,8 @@ impl QuantumNetwork {
                 let node = self
                     .nodes
                     .get_mut(example_participant)
-                    .ok_or(NetworkError::NodeNotFound)?;
+                    .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
                 let m = node.recv_bit(sender_p).await?;
                 all_measurements.push(m);
             }
@@ -2638,7 +2983,7 @@ impl QuantumNetwork {
         sender: &str,
         receiver: &str,
         participants: Vec<&str>,
-    ) -> Result<(usize, usize), NetworkError> {
+    ) -> Result<(usize, usize)> {
         // Step 1: Create GHZ state
         let ghz_qubits = self.create_distributed_ghz(participants.clone()).await?;
 
@@ -2713,7 +3058,7 @@ impl QuantumNetwork {
         receiver: &str,
         participants: Vec<&str>,
         sender_qubit: usize,
-    ) -> Result<usize, NetworkError> {
+    ) -> Result<usize> {
         // Step 1: Establish anonymous entanglement
         let (sender_epr, receiver_epr) = self
             .anonymous_entanglement(sender, receiver, participants.clone())
@@ -2725,7 +3070,8 @@ impl QuantumNetwork {
             let sender_node = self
                 .nodes
                 .get_mut(sender)
-                .ok_or(NetworkError::NodeNotFound)?;
+                .ok_or(QnectError::node_not_found("node not found".to_string()))?;
+
             if let Some(system) = &mut sender_node.local_system {
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -2734,7 +3080,10 @@ impl QuantumNetwork {
                         Ok::<(), QnectError>(())
                     })
                 })
-                .map_err(|_| NetworkError::GateApplicationFailed)?;
+                .map_err(|_| QnectError::GateApplicationFailed {
+                    gate: "unknown".into(),
+                    reason: "application failed".into(),
+                })?;
             }
         }
 
@@ -2771,55 +3120,58 @@ pub struct NetworkStats {
     pub operations_recorded: usize,
 }
 
-/// Network errors - Extended for new functionality
-#[derive(Debug)]
-pub enum NetworkError {
-    NodeNotFound,
-    NoFreeQubits,
-    QubitNotOwned,
-    InvalidOperation,
-    NoConnection,
-    FidelityTooLow,
-    SendFailed,
-    ConnectionClosed,
-    EmptyMessage,
-    InsufficientNodes,
-    InvalidFidelity,
-    InvalidGenerationRate,
-    QubitNotAllocated,
-    GateApplicationFailed,
-    MeasurementFailed,
-    NoLocalSystem,
-    DistributedGHZNotImplemented,
-}
+// // Result type alias for cleaner signatures
+// pub type Result<T> = std::result::Result<T, QnectError>;
 
-impl std::fmt::Display for NetworkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NetworkError::NodeNotFound => write!(f, "Node not found in network"),
-            NetworkError::NoFreeQubits => write!(f, "No free qubits available"),
-            NetworkError::InvalidOperation => write!(f, "Invalid operation"),
-            NetworkError::FidelityTooLow => write!(f, "Fidelity too low"),
-            NetworkError::QubitNotOwned => write!(f, "Qubit not owned by this node"),
-            NetworkError::NoConnection => write!(f, "No connection between nodes"),
-            NetworkError::SendFailed => write!(f, "Failed to send message"),
-            NetworkError::ConnectionClosed => write!(f, "Connection closed"),
-            NetworkError::EmptyMessage => write!(f, "Empty message received"),
-            NetworkError::InvalidFidelity => write!(f, "Fidelity must be between 0 and 1"),
-            NetworkError::InvalidGenerationRate => {
-                write!(f, "Generation rate must be non-negative")
-            }
-            NetworkError::InsufficientNodes => write!(f, "Insufficient nodes for operation"),
-            NetworkError::QubitNotAllocated => write!(f, "Qubit not allocated"),
-            NetworkError::GateApplicationFailed => write!(f, "Failed to apply gate"),
-            NetworkError::MeasurementFailed => write!(f, "Failed to measure qubit"),
-            NetworkError::NoLocalSystem => write!(f, "Node has no local quantum system"),
-            NetworkError::DistributedGHZNotImplemented => {
-                write!(f, "Distributed GHZ not yet implemented")
-            }
-        }
-    }
-}
+// /// Network errors - Extended for new functionality
+// #[derive(Debug)]
+// pub enum QnectError {
+//     NodeNotFound,
+//     NoFreeQubits,
+//     QubitNotOwned,
+//     InvalidOperation,
+//     NoConnection,
+//     FidelityTooLow,
+//     SendFailed,
+//     ConnectionClosed,
+//     EmptyMessage,
+//     InsufficientNodes,
+//     InvalidFidelity,
+//     InvalidGenerationRate,
+//     QubitNotAllocated,
+//     GateApplicationFailed,
+//     MeasurementFailed,
+//     NoLocalSystem,
+//     DistributedGHZNotImplemented,
+// }
+
+// impl std::fmt::Display for QnectError {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         match self {
+//             QnectError::NodeNotFound => write!(f, "Node not found in network"),
+//             QnectError::NoFreeQubits => write!(f, "No free qubits available"),
+//             NetworkError::InvalidOperation => write!(f, "Invalid operation"),
+//             NetworkError::FidelityTooLow => write!(f, "Fidelity too low"),
+//             NetworkError::QubitNotOwned => write!(f, "Qubit not owned by this node"),
+//             NetworkError::NoConnection => write!(f, "No connection between nodes"),
+//             NetworkError::SendFailed => write!(f, "Failed to send message"),
+//             NetworkError::ConnectionClosed => write!(f, "Connection closed"),
+//             NetworkError::EmptyMessage => write!(f, "Empty message received"),
+//             NetworkError::InvalidFidelity => write!(f, "Fidelity must be between 0 and 1"),
+//             NetworkError::InvalidGenerationRate => {
+//                 write!(f, "Generation rate must be non-negative")
+//             }
+//             NetworkError::InsufficientNodes => write!(f, "Insufficient nodes for operation"),
+//             NetworkError::QubitNotAllocated => write!(f, "Qubit not allocated"),
+//             NetworkError::GateApplicationFailed => write!(f, "Failed to apply gate"),
+//             NetworkError::MeasurementFailed => write!(f, "Failed to measure qubit"),
+//             NetworkError::NoLocalSystem => write!(f, "Node has no local quantum system"),
+//             NetworkError::DistributedGHZNotImplemented => {
+//                 write!(f, "Distributed GHZ not yet implemented")
+//             }
+//         }
+//     }
+// }
 
 fn gate_to_netqasm(gate: &str) -> String {
     match gate {
@@ -2837,13 +3189,11 @@ fn gate_to_netqasm(gate: &str) -> String {
         g if g.starts_with("Rz(") => g.to_string(),
         // For unknown gates, log a warning or error
         other => {
-            eprintln!("Warning: Unknown gate '{}' in NetQASM generation", other);
+            log::debug!("Warning: Unknown gate '{}' in NetQASM generation", other);
             other.to_lowercase() // Fallback
         }
     }
 }
-
-impl std::error::Error for NetworkError {}
 
 #[cfg(test)]
 mod tests {

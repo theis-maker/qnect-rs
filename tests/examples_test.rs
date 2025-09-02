@@ -13,7 +13,7 @@ mod example_tests {
 
         thread::spawn(move || {
             let output = Command::new("cargo")
-                .args(&["run", "--example", &example_name])
+                .args(["run", "--example", &example_name])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output();
@@ -21,7 +21,6 @@ mod example_tests {
             tx.send(output).ok();
         });
 
-        // Wait for completion or timeout
         match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
             Ok(Ok(output)) => {
                 if !output.status.success() {
@@ -42,6 +41,7 @@ mod example_tests {
     #[test]
     fn test_all_examples() {
         let examples = vec![
+            // Original examples
             ("00_quantum_verification", 30),
             ("01_quantum_interference", 5),
             ("02_ghz_scaling", 30),
@@ -65,6 +65,11 @@ mod example_tests {
             ("20_quantum_internet_stack", 10),
             ("21_qnpu_test", 5),
             ("22_quantum_anonymous_transmission", 10),
+            // New hub and builder examples
+            ("quantum_hub_demo", 10),
+            ("network_builder_demo", 10),
+            ("quantum_topologies", 15),
+            ("quantum_qkd_chat", 10),
         ];
 
         let mut failed = Vec::new();

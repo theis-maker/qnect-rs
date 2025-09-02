@@ -1,6 +1,7 @@
 use crate::{
-    network::network::{NetworkError, QuantumNetwork},
-    state::{Gate1Q, Gate2Q},
+    error::Result,
+    network::network::QuantumNetwork,
+    quantum::state::{Gate1Q, Gate2Q},
 };
 
 /// High-level quantum network protocols
@@ -13,7 +14,7 @@ impl QuantumProtocol {
         from_node: &str,
         to_node: &str,
         _qubit_to_teleport: usize,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<()> {
         // Create EPR pair
         let (_alice_epr, _bob_epr) = network.create_epr_pair(from_node, to_node)?;
 
@@ -30,7 +31,7 @@ impl QuantumProtocol {
     pub async fn distribute_ghz(
         network: &mut QuantumNetwork,
         nodes: Vec<&str>,
-    ) -> Result<Vec<usize>, NetworkError> {
+    ) -> Result<Vec<usize>> {
         if nodes.len() < 2 {
             return Ok(vec![]);
         }

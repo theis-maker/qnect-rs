@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Validate NetQASM syntax (if netqasm is installed)
     println!("\n=== Validating NetQASM Code ===\n");
     for (node_id, filepath) in &netqasm_files {
-        match validate_netqasm(&filepath) {
+        match validate_netqasm(filepath) {
             Ok(output) => println!("✓ {} NetQASM validation: PASSED\n{}", node_id, output),
             Err(e) => println!("⚠ {} NetQASM validation skipped: {}", node_id, e),
         }

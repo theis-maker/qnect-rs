@@ -1,6 +1,7 @@
 use crate::backend::backend::{Gate1, Gate2, QuantumBackend};
 use crate::error::{QnectError, Result};
 use async_trait::async_trait;
+use log::info;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -50,7 +51,7 @@ impl MockQnpuBackend {
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
 
         // Log the API call (in real implementation, this would be HTTP/gRPC)
-        println!(
+        info!(
             "[QNPU API #{:04}] {} -> {}: {}",
             self.api_calls.lock().await,
             self.node_id,

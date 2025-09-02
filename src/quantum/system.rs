@@ -1,7 +1,7 @@
 use crate::{
     backend::backend::{Gate1, Gate2, QuantumBackend},
-    circuit_viz::{CircuitRecorder, Operation},
     error::Result,
+    utils::circuit_viz::{CircuitRecorder, Operation},
 };
 
 /// High-level quantum system API that stays stable
@@ -280,7 +280,7 @@ impl<B: QuantumBackend> RecordingQuantumSystem<B> {
 
     /// Print the circuit to stdout
     pub fn print_circuit(&self) {
-        println!("{}", self.recorder.to_ascii());
+        log::debug!("{}", self.recorder.to_ascii());
     }
 
     /// Get the circuit as a string

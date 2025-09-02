@@ -1,5 +1,38 @@
 # Changelog
 
+# Changelog
+
+## [0.3.0] - 2025-09-02
+
+### Added
+- **Hub-based Quantum Routing** - Quantum hubs that distribute entanglement via teleportation
+- **NetworkBuilder API** - Fluent API for constructing quantum networks
+- **5 Network Topologies** - Star, Ring, Mesh, Line, and Hierarchical templates
+- **Quantum Repeaters** - Multi-hop entanglement with automatic swapping at intermediate nodes
+- **Anonymous Quantum Protocols** - Anonymous transmission and entanglement (Christandl & Wehner)
+- **Distributed Network Mode** - Each node has its own quantum system (scales to 1000s of nodes)
+- **EPR Routing** - Automatic path finding through hubs or direct connections
+- **Unified Error Type** - Single `QnectError` type for entire library
+- **Nonlocal Resources** - Proper Bell pair and GHZ state tracking across distributed nodes
+- **Hub Examples** - quantum_hub_demo, network_builder_demo, quantum_topologies
+
+### Changed
+- Network operations now properly async throughout
+- Teleportation actually moves quantum states between nodes
+- Error handling uses unified QnectError type
+- Improved network path finding algorithms
+
+### Fixed
+- Hardcoded "Alice"/"Bob" in teleportation logs now use actual node names
+- Qubit deallocation after teleportation properly frees resources
+- Network mode (Legacy vs Distributed) properly respected
+- Classical communication channels bidirectional setup
+
+### Performance
+- Hub routing enables star topologies with 100+ nodes
+- NetworkBuilder constructs complex topologies in milliseconds
+- Distributed mode removes global state bottleneck
+
 ## [0.2.0] - 2025-08-20
 
 ### Added

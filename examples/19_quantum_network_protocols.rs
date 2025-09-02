@@ -1,4 +1,4 @@
-use qnect::{network::network::QuantumNetwork, state::Gate1Q};
+use qnect::{network::network::QuantumNetwork, quantum::state::Gate1Q};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
